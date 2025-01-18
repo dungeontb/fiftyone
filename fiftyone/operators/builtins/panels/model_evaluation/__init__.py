@@ -11,7 +11,6 @@ import os
 import traceback
 
 import numpy as np
-
 from fiftyone import ViewField as F
 from fiftyone.operators.categories import Categories
 from fiftyone.operators.panel import Panel, PanelConfig
@@ -144,6 +143,12 @@ class EvaluationPanel(Panel):
         try:
             return results.mAR()
         except Exception as e:
+            return None
+
+    def get_custom_metrics(self, results):
+        try:
+            return results.custom_metrics
+        except Exception:
             return None
 
     def set_status(self, ctx):
@@ -364,6 +369,7 @@ class EvaluationPanel(Panel):
             metrics["mAR"] = self.get_mar(results)
             evaluation_data = {
                 "metrics": metrics,
+                "custom_metrics": self.get_custom_metrics(results),
                 "info": serialized_info,
                 "confusion_matrices": self.get_confusion_matrices(results),
                 "per_class_metrics": per_class_metrics,

@@ -5,6 +5,7 @@ Regression evaluation.
 | `voxel51.com <https://voxel51.com/>`_
 |
 """
+
 from copy import deepcopy
 import inspect
 import itertools
@@ -489,6 +490,14 @@ class RegressionResults(BaseEvaluationResults):
         """
         metrics = self.metrics(weights=weights)
         _print_dict_as_table(metrics, digits)
+
+    def custom_metrics_report(self):
+        """Generates a report for the custom metrics."""
+        if self.custom_metrics:
+            report = {}
+            for metric in self.custom_metrics.values():
+                report[metric["label"]] = metric["value"]
+            return report
 
     def plot_results(
         self, labels=None, sizes=None, backend="plotly", **kwargs
