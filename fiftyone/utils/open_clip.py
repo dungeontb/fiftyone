@@ -57,6 +57,7 @@ class TorchOpenClipModel(fout.TorchImageModel, fom.PromptMixin):
     def __init__(self, config):
         super().__init__(config)
         self._text_features = None
+        self.preprocess = self._preprocess_aux
 
     @property
     def can_embed_prompts(self):
@@ -88,7 +89,7 @@ class TorchOpenClipModel(fout.TorchImageModel, fom.PromptMixin):
         (
             self._model,
             _,
-            self.preprocess,
+            self._preprocess_aux,
         ) = open_clip.create_model_and_transforms(
             config.clip_model,
             pretrained=config.pretrained,
@@ -134,7 +135,7 @@ class TorchOpenClipModel(fout.TorchImageModel, fom.PromptMixin):
 
     def _predict_all(self, imgs):
         if self._preprocess:
-            imgs = [self._preprocess(img).unsqueeze(0) for img in imgs]
+            imgs = [self._preprocess(img) for img in imgs]
 
         if isinstance(imgs, (list, tuple)):
             imgs = torch.stack(imgs)
