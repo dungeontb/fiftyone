@@ -34,12 +34,14 @@ export interface ItemData<K, V> {
   key: K;
 }
 
-export type Render = (
+export type Measure = (id: ID, sizeBytes: number | Promise<number>) => void;
+
+export type Show = (
   id: ID,
   element: HTMLDivElement,
   dimensions: [number, number],
   zooming: boolean
-) => void;
+) => number | Promise<number>;
 
 export interface Response<K, V> {
   items: ItemData<K, V>[];
@@ -56,17 +58,19 @@ export type Request<K, V> = (key: K) => Promise<{
 
 export interface SpotlightConfig<K, V> {
   at?: At;
-  destroy?: (id: ID) => void;
-  detach?: (id: ID) => void;
-  get: Get<K, V>;
-  key: K;
-  offset?: number;
-  onItemClick?: ItemClick<K, V>;
-  render: Render;
-  retainItems: boolean;
-  rowAspectRatioThreshold: (width: number) => number;
   spacing?: number;
   scrollbar?: boolean;
+  key: K;
+  maxItemsSizeBytes?: number;
+  offset?: number;
+
+  detach?: (id: ID) => void;
+  get: Get<K, V>;
+  getItemSizeBytes?: (id: ID) => number;
+  hideItem: (id: ID) => void;
+  onItemClick?: ItemClick<K, V>;
+  showItem: Show;
+  rowAspectRatioThreshold: (width: number) => number;
 }
 
 export type Updater = (id: ID) => void;

@@ -159,6 +159,11 @@ export abstract class AbstractLooker<
     this.init();
   }
 
+  get loaded() {
+    const state = this.state;
+    return state.overlaysPrepared && state.dimensions && state.loaded;
+  }
+
   protected init() {}
 
   public subscribeToState(
@@ -192,7 +197,24 @@ export abstract class AbstractLooker<
     return this.sampleOverlays;
   }
 
-  protected dispatchEvent(eventType: string, detail: any): void {
+  getSizeBytesEstimate() {
+    let size = 1;
+    if (this.state.dimensions && !this.state.error) {
+      const [w, h] = this.state.dimensions;
+      size += w * h * 4;
+    }
+
+    if (!this.sampleOverlays?.length) {
+      return size;
+    }
+
+    for (let index = 0; index < this.sampleOverlays.length; index++) {
+      size += this.sampleOverlays[index].getSizeBytes();
+    }
+    return size;
+  }
+
+  dispatchEvent(eventType: string, detail: any): void {
     if (detail instanceof ErrorEvent) {
       this.updater({ error: detail.error });
       return;
@@ -209,11 +231,19 @@ export abstract class AbstractLooker<
   }
 
   protected dispatchImpliedEvents(
-    { options: prevOtions }: Readonly<State>,
-    { options }: Readonly<State>
+    previous: Readonly<State>,
+    next: Readonly<State>
   ): void {
-    if (options.showJSON !== prevOtions.showJSON) {
-      this.dispatchEvent("options", { showJSON: options.showJSON });
+    if (previous.options.showJSON !== next.options.showJSON) {
+      this.dispatchEvent("options", { showJSON: next.options.showJSON });
+    }
+
+    const wasLoaded =
+      previous.overlaysPrepared && previous.dimensions && previous.loaded;
+    const isLoaded = next.overlaysPrepared && next.dimensions && next.loaded;
+
+    if (!wasLoaded && isLoaded) {
+      this.dispatchEvent("load", undefined);
     }
   }
 

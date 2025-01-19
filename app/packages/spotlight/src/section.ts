@@ -8,6 +8,7 @@ import type {
   Edge,
   ID,
   ItemData,
+  Measure,
   Request,
   SpotlightConfig,
   Updater,
@@ -108,9 +109,10 @@ export default class Section<K, V> {
       : element.appendChild(this.#section);
   }
 
-  destroy(destroyItems = false) {
+  destroy() {
     this.#section.remove();
-    for (const row of this.#rows) row.destroy(destroyItems);
+    for (const row of this.#shown) row.hide();
+    for (const row of this.#rows) row.destroy();
     this.#rows = [];
   }
 
@@ -125,13 +127,13 @@ export default class Section<K, V> {
   }
 
   render({
-    config,
+    measure,
     target,
     threshold,
     top,
     zooming,
   }: {
-    config: SpotlightConfig<K, V>;
+    measure: Measure;
     target: number;
     threshold: (n: number) => boolean;
     top: number;
@@ -148,9 +150,7 @@ export default class Section<K, V> {
     const match = closest(
       this.#rows,
       this.#direction === DIRECTION.BACKWARD ? this.height - target : target,
-      (row) => {
-        return row.from + row.height;
-      }
+      (row) => row.from + row.height
     );
 
     let pageRow: Row<K, V>;
@@ -180,12 +180,12 @@ export default class Section<K, V> {
           break;
         }
 
-        row.show(
-          this.#container,
-          this.#direction === DIRECTION.FORWARD ? TOP : BOTTOM,
+        row.show({
+          attr: this.#direction === DIRECTION.FORWARD ? TOP : BOTTOM,
+          element: this.#container,
+          measure,
           zooming,
-          config
-        );
+        });
 
         this.#shown.add(row);
         hide.delete(row);
@@ -199,6 +199,8 @@ export default class Section<K, V> {
       }
     }
 
+    for (const row of hide) row.hide();
+
     if (
       index >= this.#rows.length - ONE &&
       this.#end &&
@@ -207,12 +209,10 @@ export default class Section<K, V> {
       requestMore = true;
     }
 
-    for (const row of hide) row.hide();
-
     this.#container.style.height = `${this.height}px`;
     return {
-      more: requestMore && this.ready,
       match: pageRow ? { row: pageRow, delta } : undefined,
+      more: requestMore && this.ready,
     };
   }
 

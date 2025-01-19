@@ -1,13 +1,13 @@
 import type Spotlight from "@fiftyone/spotlight";
 import * as fos from "@fiftyone/state";
-import type { LRUCache } from "lru-cache";
 import { useEffect } from "react";
 import { useRecoilValue } from "recoil";
+import type useRefreshers from "./useRefreshers";
 
 export default function useSelect(
   getFontSize: () => number,
   options: ReturnType<typeof fos.useLookerOptions>,
-  store: LRUCache<string, fos.Lookers>,
+  store: ReturnType<typeof useRefreshers>["lookerCache"],
   spotlight?: Spotlight<number, fos.Sample>
 ) {
   const { init, deferred } = fos.useDeferrer();
@@ -16,24 +16,21 @@ export default function useSelect(
   useEffect(() => {
     deferred(() => {
       const fontSize = getFontSize();
-      const retained = new Set<string>();
       spotlight?.updateItems((id) => {
-        const instance = store.get(id.description);
-        if (!instance) {
+        const entry = store.get(id.description);
+        if (!entry) {
           return;
         }
 
-        retained.add(id.description);
-        instance.updateOptions({
+        entry.instance.updateOptions({
           ...options,
           fontSize,
           selected: selected.has(id.description),
         });
       });
 
-      for (const id of store.keys()) {
-        if (retained.has(id)) continue;
-        store.delete(id);
+      for (const id of store.hidden()) {
+        store.remove(id);
       }
     });
   }, [deferred, getFontSize, options, selected, spotlight, store]);

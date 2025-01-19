@@ -7,7 +7,14 @@ import "@af-utils/scrollend-polyfill";
 import styles from "./styles.module.css";
 
 import type { EventCallback } from "./events";
-import type { At, ID, Response, SpotlightConfig, Updater } from "./types";
+import type {
+  At,
+  ID,
+  Measure,
+  Response,
+  SpotlightConfig,
+  Updater,
+} from "./types";
 
 import {
   DEFAULT_OFFSET,
@@ -21,11 +28,17 @@ import {
   ZOOMING_COEFFICIENT,
 } from "./constants";
 import createScrollReader from "./createScrollReader";
-import { Load, RowChange } from "./events";
+import type { RowChange } from "./events";
+import { Load, Rejected } from "./events";
 import Section from "./section";
-import { create } from "./utilities";
+import {
+  create,
+  findTop,
+  handleRowChange,
+  scrollToPosition,
+} from "./utilities";
 
-export { Load, RowChange } from "./events";
+export { Load, Rejected, RowChange } from "./events";
 export * from "./types";
 
 export default class Spotlight<K, V> extends EventTarget {
@@ -36,6 +49,7 @@ export default class Spotlight<K, V> extends EventTarget {
   #backward: Section<K, V>;
   #focused?: ID;
   #forward: Section<K, V>;
+  #loaded = false;
   #rect?: DOMRect;
   #scrollReader?: ReturnType<typeof createScrollReader>;
   #updater?: Updater;
@@ -56,7 +70,12 @@ export default class Spotlight<K, V> extends EventTarget {
     return Boolean(this.#element.parentElement);
   }
 
+  get loaded() {
+    return this.#loaded;
+  }
+
   addEventListener(type: "load", callback: EventCallback<Load<K>>): void;
+  addEventListener(type: "rejected", callback: EventCallback<Rejected>): void;
   addEventListener(
     type: "rowchange",
     callback: EventCallback<RowChange<K>>
@@ -69,6 +88,10 @@ export default class Spotlight<K, V> extends EventTarget {
   }
 
   removeEventListener(type: "load", callback: EventCallback<Load<K>>): void;
+  removeEventListener(
+    type: "rejected",
+    callback: EventCallback<Rejected>
+  ): void;
   removeEventListener(
     type: "rowchange",
     callback: EventCallback<RowChange<K>>
@@ -94,12 +117,11 @@ export default class Spotlight<K, V> extends EventTarget {
 
     const observer = new ResizeObserver(() => {
       this.#rect = this.#element.getBoundingClientRect();
-      this.attached &&
-        requestAnimationFrame(() =>
-          this.#forward ? this.#render({}) : this.#fill()
-        );
+      this.attached && this.loaded && this.#render({ ...this.#race() });
     });
     observer.observe(this.#element);
+    this.#rect = this.#element.getBoundingClientRect();
+    this.#fill();
   }
 
   destroy(): void {
@@ -108,9 +130,8 @@ export default class Spotlight<K, V> extends EventTarget {
       return;
     }
 
-    this.#backward?.destroy(!this.#config.retainItems);
-    this.#forward?.destroy(!this.#config.retainItems);
-    this.#element?.classList.remove(styles.spotlightLoaded);
+    this.#backward?.destroy();
+    this.#forward?.destroy();
     this.#element?.remove();
     this.#scrollReader?.destroy();
   }
@@ -153,8 +174,233 @@ export default class Spotlight<K, V> extends EventTarget {
     return this.#height;
   }
 
+  get #recommendedRowAspectRatioThreshold() {
+    return 10;
+  }
+
+  get #sections() {
+    const forward = this.#forward;
+    const backward = this.#backward;
+    return { backward, forward };
+  }
+
   get #width() {
     return this.#rect.width - SCROLLBAR_WIDTH * TWO;
+  }
+
+  #attachScrollReader() {
+    this.#scrollReader = createScrollReader(
+      this.#element,
+      (zooming, dispatchOffset) =>
+        this.#render({ dispatchOffset, zooming, ...this.#race() }),
+      () => this.#zooming()
+    );
+  }
+
+  #race() {
+    let bytes = 0;
+    const measure = (add: number) => {
+      bytes += add;
+      if (bytes >= this.#config.maxItemsSizeBytes) {
+        this.dispatchEvent(
+          new Rejected(this.#recommendedRowAspectRatioThreshold)
+        );
+      }
+    };
+    return {
+      measure: (id: ID, add: number | Promise<number>) => {
+        if (add instanceof Promise) {
+          add.then(measure);
+          return;
+        }
+
+        measure(add);
+      },
+    };
+  }
+
+  #render({
+    at,
+    dispatchOffset = false,
+    go = true,
+    measure,
+    offset = false,
+    zooming,
+  }: {
+    at?: At;
+    dispatchOffset?: boolean;
+    go?: boolean;
+    offset?: number | false;
+    measure: Measure;
+    zooming?: boolean;
+  }) {
+    if (go && offset !== false) {
+      this.#forward.top = this.#pivot + this.#config.offset;
+      this.#backward.top = this.#config.offset;
+    }
+
+    const top = findTop({
+      at,
+      offset,
+      scrollTop: this.#element.scrollTop,
+      ...this.#sections,
+    });
+
+    const params = {
+      config: this.#config,
+      measure,
+      updater: (id) => this.#updater(id),
+      zooming,
+    };
+
+    const backwardResult = this.#backward.render({
+      target: top + this.#height + this.#padding,
+      threshold: (n) => n > top - this.#padding,
+      top: top + this.#config.offset,
+      ...params,
+    });
+
+    const forwardResult = this.#forward.render({
+      target: top - this.#padding - this.#backward.height,
+      threshold: (n) =>
+        n < top + this.#height + this.#padding - this.#backward.height,
+      top: top - this.#backward.height + this.#config.offset,
+      ...params,
+    });
+
+    const rowChange = handleRowChange({
+      at,
+      dispatchOffset,
+      keys: this.#keys,
+      matches: {
+        backward: backwardResult?.match,
+        forward: forwardResult?.match,
+      },
+    });
+
+    if (rowChange) {
+      this.dispatchEvent(rowChange);
+    }
+
+    if (!go && offset !== false) {
+      this.#forward.top = this.#pivot + this.#config.offset;
+      this.#backward.top = this.#config.offset;
+    }
+
+    scrollToPosition({ at, el: this.#element, offset, top, ...this.#sections });
+
+    if (!zooming && backwardResult.more) this.#previous();
+    if (!zooming && forwardResult.more) this.#next();
+  }
+
+  #zooming() {
+    return (
+      (this.#width /
+        (this.#height *
+          Math.max(this.#config.rowAspectRatioThreshold(this.#width), ONE))) *
+      ZOOMING_COEFFICIENT
+    );
+  }
+
+  async #fill() {
+    this.#forward = new Section({
+      at: this.#config.at?.description,
+      config: this.#config,
+      direction: DIRECTION.FORWARD,
+      edge: { key: this.#config.key, remainder: [] },
+      width: this.#width,
+    });
+    this.#forward.attach(this.#element);
+
+    await this.#next(false);
+
+    while (this.#containerHeight < this.#height && !this.#forward.finished) {
+      await this.#next(false);
+    }
+
+    await this.#previous(false);
+
+    let bytes = 0;
+    const keys = new Set<string>();
+    while (!this.#loaded) {
+      try {
+        this.#render({
+          at: this.#config.at,
+          offset: -this.#pivot,
+          measure: (id, next) => {
+            if (next instanceof Promise) {
+              throw next;
+            }
+
+            if (keys.has(id.description)) {
+              return;
+            }
+            keys.add(id.description);
+
+            bytes += next;
+
+            if (bytes > this.#config.maxItemsSizeBytes) {
+              throw bytes;
+            }
+          },
+          zooming: false,
+        });
+        this.#loaded = true;
+      } catch (response) {
+        if (response instanceof Promise) {
+          await response;
+          continue;
+        }
+
+        if (typeof response === "number") {
+          this.dispatchEvent(
+            new Rejected(this.#recommendedRowAspectRatioThreshold)
+          );
+          break;
+        }
+
+        console.error(response);
+        break;
+      }
+    }
+
+    this.#loaded && this.dispatchEvent(new Load(this.#config.key));
+    this.#attachScrollReader();
+  }
+
+  async #get(key: K): Promise<Response<K, V>> {
+    if (key === null) {
+      return { items: [], next: null, previous: null };
+    }
+    const result = await this.#config.get(key);
+    for (const { id } of result.items) {
+      this.#keys.set(id, key);
+    }
+
+    if (!this.#backward) {
+      let remainder = [];
+      const hasAt = result.items
+        .map((item) => item.id.description)
+        .indexOf(this.#config.at?.description);
+
+      if (hasAt >= ZERO) {
+        remainder = result.items.slice(ZERO, hasAt).reverse();
+        result.items = result.items.slice(hasAt);
+      }
+
+      this.#backward = new Section({
+        config: this.#config,
+        direction: DIRECTION.BACKWARD,
+        edge:
+          result.previous !== null
+            ? { key: result.previous, remainder }
+            : { key: null, remainder },
+        width: this.#width,
+      });
+      this.#backward.attach(this.#element);
+    }
+
+    return result;
   }
 
   async #next(render = true) {
@@ -169,6 +415,7 @@ export default class Spotlight<K, V> extends EventTarget {
 
           this.#render({
             at: { description: this.#focused.description, offset: ZERO },
+            ...this.#race(),
           });
           return this.#focused;
         },
@@ -209,7 +456,12 @@ export default class Spotlight<K, V> extends EventTarget {
               offset = before - this.#containerHeight + this.#config.spacing;
             }
 
-            this.#render({ zooming: false, offset, go: false });
+            this.#render({
+              go: false,
+              offset,
+              zooming: false,
+              ...this.#race(),
+            });
           });
 
         run();
@@ -237,6 +489,7 @@ export default class Spotlight<K, V> extends EventTarget {
 
           this.#render({
             at: { description: this.#focused.description, offset: ZERO },
+            ...this.#race(),
           });
           return this.#focused;
         },
@@ -280,6 +533,7 @@ export default class Spotlight<K, V> extends EventTarget {
               go: false,
               offset: typeof offset === "number" ? -offset : false,
               zooming: false,
+              ...this.#race(),
             });
           });
 
@@ -294,180 +548,5 @@ export default class Spotlight<K, V> extends EventTarget {
         return result;
       }
     );
-  }
-
-  async #fill() {
-    this.#forward = new Section({
-      at: this.#config.at?.description,
-      config: this.#config,
-      direction: DIRECTION.FORWARD,
-      edge: { key: this.#config.key, remainder: [] },
-      width: this.#width,
-    });
-    this.#forward.attach(this.#element);
-
-    await this.#next(false);
-
-    while (this.#containerHeight < this.#height && !this.#forward.finished) {
-      await this.#next(false);
-    }
-
-    await this.#previous(false);
-
-    requestAnimationFrame(() => {
-      this.#render({
-        zooming: false,
-        offset: -this.#pivot,
-        at: this.#config.at,
-      });
-
-      requestAnimationFrame(() => {
-        this.#scrollReader = createScrollReader(
-          this.#element,
-          (zooming, dispatchOffset) =>
-            this.#render({ dispatchOffset, zooming }),
-          () => {
-            return (
-              (this.#width /
-                (this.#height *
-                  Math.max(
-                    this.#config.rowAspectRatioThreshold(this.#width),
-                    ONE
-                  ))) *
-              ZOOMING_COEFFICIENT
-            );
-          }
-        );
-      });
-
-      this.dispatchEvent(new Load(this.#config.key));
-      this.#element.classList.add(styles.spotlightLoaded);
-    });
-  }
-
-  async #get(key: K): Promise<Response<K, V>> {
-    if (key === null) {
-      return { items: [], next: null, previous: null };
-    }
-    const result = await this.#config.get(key);
-    for (const { id } of result.items) {
-      this.#keys.set(id, key);
-    }
-
-    if (!this.#backward) {
-      let remainder = [];
-      const hasAt = result.items
-        .map((item) => item.id.description)
-        .indexOf(this.#config.at?.description);
-      if (hasAt >= ZERO) {
-        remainder = result.items.slice(ZERO, hasAt).reverse();
-        result.items = result.items.slice(hasAt);
-      }
-
-      this.#backward = new Section({
-        config: this.#config,
-        direction: DIRECTION.BACKWARD,
-        edge:
-          result.previous !== null
-            ? { key: result.previous, remainder }
-            : { key: null, remainder },
-        width: this.#width,
-      });
-      this.#backward.attach(this.#element);
-    }
-
-    return result;
-  }
-
-  #render({
-    at,
-    dispatchOffset = false,
-    go = true,
-    offset = false,
-    zooming,
-  }: {
-    at?: At;
-    dispatchOffset?: boolean;
-    go?: boolean;
-    offset?: number | false;
-    zooming?: boolean;
-  }) {
-    if (go && offset !== false) {
-      this.#forward.top = this.#pivot + this.#config.offset;
-      this.#backward.top = this.#config.offset;
-    }
-
-    let top = this.#element.scrollTop - (offset === false ? ZERO : offset);
-    if (at) {
-      const row = this.#forward.find(at.description);
-      if (row) {
-        top = this.#backward.height + row.from - at.offset;
-      }
-    }
-
-    const backward = this.#backward.render({
-      config: this.#config,
-      target: top + this.#height + this.#padding,
-      threshold: (n) => {
-        return n > top - this.#padding;
-      },
-      top: top + this.#config.offset,
-      updater: (id) => this.#updater(id),
-      zooming,
-    });
-
-    const forward = this.#forward.render({
-      config: this.#config,
-      target: top - this.#padding - this.#backward.height,
-      threshold: (n) => {
-        return n < top + this.#height + this.#padding - this.#backward.height;
-      },
-      top: top - this.#backward.height + this.#config.offset,
-      updater: (id) => this.#updater(id),
-      zooming,
-    });
-
-    if (dispatchOffset || at) {
-      let item = forward.match?.row.first;
-      let delta = forward.match?.delta;
-
-      if (!item || (backward.match && backward.match.delta < delta)) {
-        item = backward.match?.row.first;
-        delta = backward.match?.delta;
-      }
-
-      this.#keys.has(item) &&
-        this.dispatchEvent(
-          new RowChange(item, this.#keys.get(item), Math.abs(delta))
-        );
-    }
-
-    if (!go && offset !== false) {
-      this.#forward.top = this.#pivot + this.#config.offset;
-      this.#backward.top = this.#config.offset;
-    }
-
-    if (at) {
-      const row = this.#forward.find(at.description);
-      if (row) {
-        this.#element.scrollTo(
-          ZERO,
-          this.#backward.height + row.from - at.offset
-        );
-      } else {
-        const row = this.#backward.find(at.description);
-        if (row) {
-          this.#element.scrollTo(
-            ZERO,
-            this.#backward.height - row.from - row.height
-          );
-        }
-      }
-    } else if (offset !== false && top) {
-      this.#element.scrollTo(ZERO, top);
-    }
-
-    if (!zooming && backward.more) this.#previous();
-    if (!zooming && forward.more) this.#next();
   }
 }
